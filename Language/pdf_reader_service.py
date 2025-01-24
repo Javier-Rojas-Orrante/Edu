@@ -1,4 +1,5 @@
 import fitz  # PyMuPDF
+import sys
 
 class PDFReaderService:
     """
@@ -28,9 +29,9 @@ class PDFReaderService:
         return contents
 
     @staticmethod
-    def get_chapter_contents(path, chapter_key):
+    def get_chapter_start_and_end_pages(path, chapter_key):
         """
-        Retrieves the contents of a specific chapter based on its key in the TOC.
+        Retrieves the start and end pages of a specific chapter based on its key in the TOC.
         Chapter key corresponds to the order in the TOC list (1-indexed).
         """
         # Open the PDF document
@@ -40,20 +41,27 @@ class PDFReaderService:
 
         if chapter_key < 1 or chapter_key > len(toc):
             print(f"Chapter key {chapter_key} is out of range. The document has {len(toc)} chapters.")
-            return None
+            return None, None
 
         # Get the specified chapter
         chapter = toc[chapter_key - 1]
-        title = chapter[1]
-        start_page = chapter[2] - 1  # Convert to 0-based index
+        start_page = chapter[2]  # Assume TOC page numbers are 1-based
         end_page = toc[chapter_key][2] - 1 if chapter_key < len(toc) else len(textbook)  # End page
 
-        print(f"Chapter '{title}' starts on page {start_page + 1}.")
+        return start_page, end_page
 
-        # Extract text from all pages in the chapter
-        chapter_text = ""
-        for page_num in range(start_page, end_page):
-            page = textbook[page_num]
-            chapter_text += page.get_text()
+    @staticmethod
+    def get_chapter_contents(path, start_page, end_page):
+        """
+        Extracts the contents of a chapter given its start and end pages.
+        Saves each page of the chapter as an image file.
+        """
+        # Open the PDF document
+        with open(path, 'rb') as file:
+            textbook = fitz.open(file)
 
-        return chapter_text
+            # Loop through the specified page range
+            for page_number in range(start_page, end_page):
+                page = textbook.load_page(page_number)  # Load the page
+                image = page.get_pixmap()  # Render the page as an image
+                image.save(f"chapter_page_{page_number + 1}.png")  # Save the image
