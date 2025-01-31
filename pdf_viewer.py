@@ -4,6 +4,10 @@ from tkinter import filedialog, ttk
 from tkinter import messagebox
 import fitz
 from PIL import Image, ImageTk
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.DEBUG, format='%(levelname)s - %(message)s')
 
 class PDFViewer:
     def __init__(self, root):
@@ -13,6 +17,8 @@ class PDFViewer:
         self.current_page = 0
         self.total_pages = 0
         self.photo_image = None
+
+        logging.debug("Initializing PDFViewer")
 
         # Create menu
         menubar = tk.Menu(root)
@@ -72,27 +78,33 @@ class PDFViewer:
         self.chapters = []
 
     def open_pdf(self):
+        logging.debug("Opening PDF file")
         file_path = filedialog.askopenfilename(filetypes=[("PDF Files", "*.pdf")])
         if not file_path:
+            logging.info("No file selected")
             return
         
         if self.doc:
             self.doc.close()
+            logging.debug("Closed existing document")
         
         self.doc = fitz.open(file_path)
         self.total_pages = len(self.doc)
         self.current_page = 0
+        logging.info(f"Opened PDF: {file_path} with {self.total_pages} pages")
         self.update_page_label()
         self.render_page()
 
     def render_page(self, event=None):
         if not self.doc:
+            logging.warning("No document loaded")
             return
 
         canvas_width = self.canvas.winfo_width()
         canvas_height = self.canvas.winfo_height()
 
         if canvas_width <= 0 or canvas_height <= 0:
+            logging.warning("Canvas dimensions are invalid")
             return
 
         page = self.doc.load_page(self.current_page)
@@ -108,75 +120,97 @@ class PDFViewer:
         self.canvas.delete("all")
         self.canvas.create_image(0, 0, image=self.photo_image, anchor=tk.NW)
         self.canvas.configure(scrollregion=self.canvas.bbox(tk.ALL))
+        logging.debug(f"Rendered page {self.current_page + 1}")
 
     def update_page_label(self):
         self.page_label.config(text=f"Page: {self.current_page + 1}/{self.total_pages}")
+        logging.debug(f"Updated page label to {self.current_page + 1}/{self.total_pages}")
 
     def prev_page(self):
         if self.current_page > 0:
             self.current_page -= 1
             self.update_page_label()
             self.render_page()
+            logging.info(f"Moved to previous page: {self.current_page + 1}")
 
     def next_page(self):
         if self.current_page < self.total_pages - 1:
             self.current_page += 1
             self.update_page_label()
             self.render_page()
+            logging.info(f"Moved to next page: {self.current_page + 1}")
 
     def first_page(self):
         self.current_page = 0
         self.update_page_label()
         self.render_page()
+        logging.info("Moved to first page")
 
     def last_page(self):
         self.current_page = self.total_pages - 1
         self.update_page_label()
         self.render_page()
+        logging.info("Moved to last page")
     
     def get_chapter_info(self):
         """Extract chapter information from PDF outline"""
         self.chapters = []
         if not self.doc:
+            logging.warning("No document loaded for chapter extraction")
             return
 
         toc = self.doc.get_toc()
+        logging.debug(f"Table of Contents: {toc}")
+        
         for level, title, page in toc:
             if level == 1:  # Assuming level 1 items are chapters
-                self.chapters.append({
+                chapter_info = {
                     'title': title,
                     'start_page': page,
                     'end_page': len(self.doc) - 1  # Temporary value
-                })
+                }
+                self.chapters.append(chapter_info)
+                logging.debug(f"Added chapter: {chapter_info}")
 
         # Set end pages for chapters
         for i in range(len(self.chapters)-1):
             self.chapters[i]['end_page'] = self.chapters[i+1]['start_page'] - 1
+            logging.debug(f"Set end page for chapter '{self.chapters[i]['title']}': {self.chapters[i]['end_page']}")
+        
         if self.chapters:
             self.chapters[-1]['end_page'] = len(self.doc) - 1
+            logging.debug(f"Set end page for last chapter '{self.chapters[-1]['title']}': {self.chapters[-1]['end_page']}")
+        
+        logging.info(f"Extracted chapter information: {self.chapters}")
 
+        logging.info(f"Extracted chapter information: {self.chapters}")
 
     def get_current_chapter(self):
         """Determine which chapter contains the current page"""
         for chapter in self.chapters:
             if chapter['start_page'] <= self.current_page <= chapter['end_page']:
+                logging.debug(f"Current page {self.current_page + 1} is in chapter: {chapter['title']}")
                 return chapter
+        logging.debug("No chapter found for current page")
         return None
 
     def extract_current_chapter_images(self):
         """Extract all images from current chapter"""
         if not self.doc:
             messagebox.showerror("Error", "No PDF loaded")
+            logging.error("Attempted to extract images with no PDF loaded")
             return
 
         chapter = self.get_current_chapter()
         if not chapter:
             messagebox.showinfo("Info", "No chapter structure detected")
+            logging.info("No chapter structure detected for image extraction")
             return
 
         # Create output directory
         output_dir = f"Chapter_Images_{chapter['title']}"
         os.makedirs(output_dir, exist_ok=True)
+        logging.debug(f"Created output directory: {output_dir}")
 
         # Extract images from chapter pages
         image_count = 0
@@ -193,9 +227,11 @@ class PDFViewer:
                 with open(f"{output_dir}/page{page_num+1}_img{img_index+1}.{base_image['ext']}", "wb") as f:
                     f.write(image_bytes)
                 image_count += 1
+                logging.debug(f"Extracted image {img_index + 1} from page {page_num + 1}")
 
         messagebox.showinfo("Success", 
             f"Extracted {image_count} images to {output_dir}/")
+        logging.info(f"Extracted {image_count} images to {output_dir}/")
 
 if __name__ == "__main__":
     root = tk.Tk()
