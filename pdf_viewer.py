@@ -1,13 +1,12 @@
 import os
 import tkinter as tk
-from tkinter import filedialog, ttk
-from tkinter import messagebox
-import fitz
+from tkinter import filedialog, ttk, messagebox
+import fitz  # PyMuPDF
 from PIL import Image, ImageTk
 import logging
 
 # Setup logging
-logging.basicConfig(level=logging.DEBUG, format='%(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
 
 class PDFViewer:
     def __init__(self, root):
@@ -17,8 +16,9 @@ class PDFViewer:
         self.current_page = 0
         self.total_pages = 0
         self.photo_image = None
+        self.chapters = []
 
-        logging.debug("Initializing PDFViewer")
+        logging.info("Initializing PDFViewer")
 
         # Create menu
         menubar = tk.Menu(root)
@@ -57,28 +57,17 @@ class PDFViewer:
         self.next_btn = ttk.Button(nav_frame, text="Next", command=self.next_page)
         self.next_btn.pack(side=tk.LEFT, padx=5, pady=2)
 
-        self.first_btn = ttk.Button(nav_frame, text="First", command=self.first_page)
-        self.first_btn.pack(side=tk.LEFT, padx=5, pady=2)
-
-        self.last_btn = ttk.Button(nav_frame, text="Last", command=self.last_page)
-        self.last_btn.pack(side=tk.LEFT, padx=5, pady=2)
-
         self.page_label = ttk.Label(nav_frame, text="Page: 0/0")
         self.page_label.pack(side=tk.LEFT, padx=10)
+
+        self.extract_btn = ttk.Button(nav_frame, text="Extract Chapter Images", command=self.extract_current_chapter_images)
+        self.extract_btn.pack(side=tk.LEFT, padx=5, pady=2)
 
         # Bind canvas resize
         self.canvas.bind("<Configure>", self.render_page)
 
-        self.extract_btn = ttk.Button(nav_frame, text="Extract Chapter Images", 
-                                    command=self.extract_current_chapter_images)
-        self.extract_btn.pack(side=tk.LEFT, padx=5, pady=2)
-
-        # Initialize chapter tracking variables
-        self.current_chapter = None
-        self.chapters = []
-
     def open_pdf(self):
-        logging.debug("Opening PDF file")
+        logging.info("Opening PDF file")
         file_path = filedialog.askopenfilename(filetypes=[("PDF Files", "*.pdf")])
         if not file_path:
             logging.info("No file selected")
@@ -86,7 +75,7 @@ class PDFViewer:
         
         if self.doc:
             self.doc.close()
-            logging.debug("Closed existing document")
+            logging.info("Closed existing document")
         
         self.doc = fitz.open(file_path)
         self.total_pages = len(self.doc)
@@ -94,6 +83,7 @@ class PDFViewer:
         logging.info(f"Opened PDF: {file_path} with {self.total_pages} pages")
         self.update_page_label()
         self.render_page()
+        self.get_chapter_info()
 
     def render_page(self, event=None):
         if not self.doc:
@@ -120,11 +110,11 @@ class PDFViewer:
         self.canvas.delete("all")
         self.canvas.create_image(0, 0, image=self.photo_image, anchor=tk.NW)
         self.canvas.configure(scrollregion=self.canvas.bbox(tk.ALL))
-        logging.debug(f"Rendered page {self.current_page + 1}")
+        logging.info(f"Rendered page {self.current_page + 1}")
 
     def update_page_label(self):
         self.page_label.config(text=f"Page: {self.current_page + 1}/{self.total_pages}")
-        logging.debug(f"Updated page label to {self.current_page + 1}/{self.total_pages}")
+        logging.info(f"Updated page label to {self.current_page + 1}/{self.total_pages}")
 
     def prev_page(self):
         if self.current_page > 0:
@@ -140,18 +130,6 @@ class PDFViewer:
             self.render_page()
             logging.info(f"Moved to next page: {self.current_page + 1}")
 
-    def first_page(self):
-        self.current_page = 0
-        self.update_page_label()
-        self.render_page()
-        logging.info("Moved to first page")
-
-    def last_page(self):
-        self.current_page = self.total_pages - 1
-        self.update_page_label()
-        self.render_page()
-        logging.info("Moved to last page")
-    
     def get_chapter_info(self):
         """Extract chapter information from PDF outline"""
         self.chapters = []
@@ -160,14 +138,14 @@ class PDFViewer:
             return
 
         toc = self.doc.get_toc()
-        logging.debug(f"Table of Contents: {toc}")
+        logging.info(f"Extracted Table of Contents with {len(toc)} entries")
         
         for level, title, page in toc:
             if level == 1:  # Assuming level 1 items are chapters
                 chapter_info = {
                     'title': title,
-                    'start_page': page,
-                    'end_page': len(self.doc) - 1  # Temporary value
+                    'start_page': page - 1,  # Convert to 0-based index
+                    'end_page': self.total_pages - 1  # Temporary value
                 }
                 self.chapters.append(chapter_info)
                 logging.debug(f"Added chapter: {chapter_info}")
@@ -178,24 +156,28 @@ class PDFViewer:
             logging.debug(f"Set end page for chapter '{self.chapters[i]['title']}': {self.chapters[i]['end_page']}")
         
         if self.chapters:
-            self.chapters[-1]['end_page'] = len(self.doc) - 1
+            self.chapters[-1]['end_page'] = self.total_pages - 1
             logging.debug(f"Set end page for last chapter '{self.chapters[-1]['title']}': {self.chapters[-1]['end_page']}")
         
-        logging.info(f"Extracted chapter information: {self.chapters}")
-
-        logging.info(f"Extracted chapter information: {self.chapters}")
+        logging.info(f"Extracted {len(self.chapters)} chapters")
 
     def get_current_chapter(self):
         """Determine which chapter contains the current page"""
+        if not self.chapters:
+            logging.warning("No chapters available")
+            return None
+
         for chapter in self.chapters:
             if chapter['start_page'] <= self.current_page <= chapter['end_page']:
-                logging.debug(f"Current page {self.current_page + 1} is in chapter: {chapter['title']}")
+                logging.info(f"Current page {self.current_page + 1} is in chapter: {chapter['title']}")
                 return chapter
-        logging.debug("No chapter found for current page")
+
+        logging.warning(f"No chapter found for current page {self.current_page + 1}")
         return None
 
     def extract_current_chapter_images(self):
         """Extract all images from current chapter"""
+        # TODO: use method getpixmap instead, this only extracts the images, the chapter images, we want the whole pages. 
         if not self.doc:
             messagebox.showerror("Error", "No PDF loaded")
             logging.error("Attempted to extract images with no PDF loaded")
@@ -204,13 +186,13 @@ class PDFViewer:
         chapter = self.get_current_chapter()
         if not chapter:
             messagebox.showinfo("Info", "No chapter structure detected")
-            logging.info("No chapter structure detected for image extraction")
+            logging.warning("No chapter structure detected for image extraction")
             return
 
         # Create output directory
         output_dir = f"Chapter_Images_{chapter['title']}"
         os.makedirs(output_dir, exist_ok=True)
-        logging.debug(f"Created output directory: {output_dir}")
+        logging.info(f"Created output directory: {output_dir}")
 
         # Extract images from chapter pages
         image_count = 0
@@ -229,8 +211,7 @@ class PDFViewer:
                 image_count += 1
                 logging.debug(f"Extracted image {img_index + 1} from page {page_num + 1}")
 
-        messagebox.showinfo("Success", 
-            f"Extracted {image_count} images to {output_dir}/")
+        messagebox.showinfo("Success", f"Extracted {image_count} images to {output_dir}/")
         logging.info(f"Extracted {image_count} images to {output_dir}/")
 
 if __name__ == "__main__":
