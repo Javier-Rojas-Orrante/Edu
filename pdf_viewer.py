@@ -4,6 +4,7 @@ from tkinter import filedialog, ttk, messagebox
 import fitz  # PyMuPDF
 from PIL import Image, ImageTk
 import logging
+import io
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
@@ -11,14 +12,13 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
 class PDFViewer:
     def __init__(self, root):
         self.root = root
-        self.root.title("AI Teacher")
+        self.root.title("PDF Chapter Extractor")
         self.doc = None
         self.current_page = 0
         self.total_pages = 0
         self.photo_image = None
         self.chapters = []
-
-        logging.info("Initializing PDFViewer")
+        self.MAX_CHAPTER_PAGES = 100  # Safety limit
 
         # Create menu
         menubar = tk.Menu(root)
@@ -29,15 +29,14 @@ class PDFViewer:
         menubar.add_cascade(label="File", menu=file_menu)
         root.config(menu=menubar)
 
-        # Create main frame with scrollbars
+        # Main frame with scrollbars
         self.main_frame = ttk.Frame(root)
         self.main_frame.pack(fill=tk.BOTH, expand=1)
 
-        # Create Canvas
         self.canvas = tk.Canvas(self.main_frame)
         self.canvas.grid(row=0, column=0, sticky="nsew")
 
-        # Create Scrollbars
+        # Scrollbars
         v_scroll = ttk.Scrollbar(self.main_frame, orient=tk.VERTICAL, command=self.canvas.yview)
         v_scroll.grid(row=0, column=1, sticky="ns")
         h_scroll = ttk.Scrollbar(self.main_frame, orient=tk.HORIZONTAL, command=self.canvas.xview)
@@ -60,159 +59,183 @@ class PDFViewer:
         self.page_label = ttk.Label(nav_frame, text="Page: 0/0")
         self.page_label.pack(side=tk.LEFT, padx=10)
 
-        self.extract_btn = ttk.Button(nav_frame, text="Extract Chapter Images", command=self.extract_current_chapter_images)
+        self.extract_btn = ttk.Button(nav_frame, text="Extract Chapter", command=self.extract_current_chapter)
         self.extract_btn.pack(side=tk.LEFT, padx=5, pady=2)
 
-        # Bind canvas resize
         self.canvas.bind("<Configure>", self.render_page)
 
     def open_pdf(self):
-        logging.info("Opening PDF file")
-        file_path = filedialog.askopenfilename(filetypes=[("PDF Files", "*.pdf")])
-        if not file_path:
-            logging.info("No file selected")
-            return
-        
-        if self.doc:
-            self.doc.close()
-            logging.info("Closed existing document")
-        
-        self.doc = fitz.open(file_path)
-        self.total_pages = len(self.doc)
-        self.current_page = 0
-        logging.info(f"Opened PDF: {file_path} with {self.total_pages} pages")
-        self.update_page_label()
-        self.render_page()
-        self.get_chapter_info()
+        try:
+            file_path = filedialog.askopenfilename(filetypes=[("PDF Files", "*.pdf")])
+            if not file_path: return
+
+            if self.doc:
+                self.doc.close()
+
+            self.doc = fitz.open(file_path)
+            self.total_pages = len(self.doc)
+            self.current_page = 0
+            self.chapters = self.get_chapter_info()
+            
+            self.update_page_label()
+            self.render_page()
+            logging.info(f"Loaded PDF with {self.total_pages} pages")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load PDF:\n{str(e)}")
+
+            
+    def get_chapter_info(self):
+        """Extract hierarchical chapter information with deepest subdivisions"""
+        chapters = []
+        try:
+            toc = self.doc.get_toc()
+            if not toc:
+                return []
+
+            # Identify deepest hierarchical subdivisions
+            leaf_entries = []
+            for i, entry in enumerate(toc):
+                level, title, page = entry
+                is_leaf = True
+                
+                # Check if any subsequent entries are children of this entry
+                for j in range(i+1, len(toc)):
+                    next_level = toc[j][0]
+                    if next_level > level:  # Found a deeper subdivision
+                        is_leaf = False
+                        break
+                    if next_level <= level:  # Sibling or parent level reached
+                        break
+                        
+                if is_leaf:
+                    leaf_entries.append(entry)
+
+            # Fallback to top-level chapters if no subdivisions found
+            if not leaf_entries:
+                leaf_entries = [e for e in toc if e[0] == 1]
+                if not leaf_entries:  # If no chapters, treat whole document as one
+                    return [{
+                        'title': 'Full Document',
+                        'start': 0,
+                        'end': self.total_pages - 1
+                    }]
+
+            # Create chapter ranges with boundary checks
+            for i, (level, title, page) in enumerate(leaf_entries):
+                start = max(0, page - 1)  # Convert to 0-based index
+                end = self.total_pages - 1
+                
+                # Calculate end page using next subdivision's start
+                if i < len(leaf_entries) - 1:
+                    next_start = max(0, leaf_entries[i+1][2] - 1)
+                    end = min(next_start - 1, self.total_pages - 1)
+                    
+                # Ensure valid page range
+                start = min(start, self.total_pages - 1)
+                end = max(start, min(end, self.total_pages - 1))
+
+                chapters.append({
+                    'title': self.clean_title(title),
+                    'start': start,
+                    'end': end
+                })
+                logging.info(f"Subdivision: {title} (pages {start+1}-{end+1})")
+
+            return chapters
+
+        except Exception as e:
+            logging.warning(f"Chapter detection failed: {str(e)}")
+            return []
+
+    def clean_title(self, title):
+        return "".join(c if c.isalnum() else "_" for c in title.strip())
 
     def render_page(self, event=None):
-        if not self.doc:
-            logging.warning("No document loaded")
-            return
+        if not self.doc: return
+        
+        try:
+            canvas_width = max(self.canvas.winfo_width(), 10)
+            canvas_height = max(self.canvas.winfo_height(), 10)
 
-        canvas_width = self.canvas.winfo_width()
-        canvas_height = self.canvas.winfo_height()
-
-        if canvas_width <= 0 or canvas_height <= 0:
-            logging.warning("Canvas dimensions are invalid")
-            return
-
-        page = self.doc.load_page(self.current_page)
-        zoom_x = canvas_width / page.rect.width
-        zoom_y = canvas_height / page.rect.height
-        zoom = min(zoom_x, zoom_y)
-
-        mat = fitz.Matrix(zoom, zoom)
-        pix = page.get_pixmap(matrix=mat)
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        self.photo_image = ImageTk.PhotoImage(img)
-
-        self.canvas.delete("all")
-        self.canvas.create_image(0, 0, image=self.photo_image, anchor=tk.NW)
-        self.canvas.configure(scrollregion=self.canvas.bbox(tk.ALL))
-        logging.info(f"Rendered page {self.current_page + 1}")
+            page = self.doc.load_page(self.current_page)
+            zoom = min(canvas_width / page.rect.width, 
+                      canvas_height / page.rect.height)
+            
+            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+            self.photo_image = ImageTk.PhotoImage(
+                Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            )
+            
+            self.canvas.delete("all")
+            self.canvas.create_image(0, 0, image=self.photo_image, anchor=tk.NW)
+            self.canvas.configure(scrollregion=self.canvas.bbox(tk.ALL))
+            
+        except Exception as e:
+            logging.error(f"Render error: {str(e)}")
 
     def update_page_label(self):
-        self.page_label.config(text=f"Page: {self.current_page + 1}/{self.total_pages}")
-        logging.info(f"Updated page label to {self.current_page + 1}/{self.total_pages}")
+        self.page_label.config(text=f"Page: {self.current_page+1}/{self.total_pages}")
 
     def prev_page(self):
         if self.current_page > 0:
             self.current_page -= 1
             self.update_page_label()
             self.render_page()
-            logging.info(f"Moved to previous page: {self.current_page + 1}")
 
     def next_page(self):
         if self.current_page < self.total_pages - 1:
             self.current_page += 1
             self.update_page_label()
             self.render_page()
-            logging.info(f"Moved to next page: {self.current_page + 1}")
 
-    def get_chapter_info(self):
-        """Extract chapter information from PDF outline"""
-        self.chapters = []
-        if not self.doc:
-            logging.warning("No document loaded for chapter extraction")
-            return
+    def extract_current_chapter(self):
+        try:
+            if not self.doc:
+                messagebox.showinfo("Info", "No PDF loaded")
+                return
 
-        toc = self.doc.get_toc()
-        logging.info(f"Extracted Table of Contents with {len(toc)} entries")
-        
-        for level, title, page in toc:
-            if level == 1:  # Assuming level 1 items are chapters
-                chapter_info = {
-                    'title': title,
-                    'start_page': page - 1,  # Convert to 0-based index
-                    'end_page': self.total_pages - 1  # Temporary value
-                }
-                self.chapters.append(chapter_info)
-                logging.debug(f"Added chapter: {chapter_info}")
+            current_chapter = next(
+                (ch for ch in self.chapters 
+                 if ch['start'] <= self.current_page <= ch['end']), None
+            )
 
-        # Set end pages for chapters
-        for i in range(len(self.chapters)-1):
-            self.chapters[i]['end_page'] = self.chapters[i+1]['start_page'] - 1
-            logging.debug(f"Set end page for chapter '{self.chapters[i]['title']}': {self.chapters[i]['end_page']}")
-        
-        if self.chapters:
-            self.chapters[-1]['end_page'] = self.total_pages - 1
-            logging.debug(f"Set end page for last chapter '{self.chapters[-1]['title']}': {self.chapters[-1]['end_page']}")
-        
-        logging.info(f"Extracted {len(self.chapters)} chapters")
+            if not current_chapter:
+                messagebox.showinfo("Info", "Current page not in any chapter")
+                return
 
-    def get_current_chapter(self):
-        """Determine which chapter contains the current page"""
-        if not self.chapters:
-            logging.warning("No chapters available")
-            return None
+            # Validate chapter boundaries
+            if not (0 <= current_chapter['start'] <= current_chapter['end'] < self.total_pages):
+                messagebox.showerror("Error", "Invalid chapter boundaries")
+                return
 
-        for chapter in self.chapters:
-            if chapter['start_page'] <= self.current_page <= chapter['end_page']:
-                logging.info(f"Current page {self.current_page + 1} is in chapter: {chapter['title']}")
-                return chapter
+            # Check page count safety limit
+            page_count = current_chapter['end'] - current_chapter['start'] + 1
+            if page_count > self.MAX_CHAPTER_PAGES:
+                messagebox.showerror("Limit Exceeded", 
+                    f"Chapter too large ({page_count} pages). Max allowed: {self.MAX_CHAPTER_PAGES}")
+                return
 
-        logging.warning(f"No chapter found for current page {self.current_page + 1}")
-        return None
-
-    def extract_current_chapter_images(self):
-        """Extract all images from current chapter"""
-        # TODO: use method getpixmap instead, this only extracts the images, the chapter images, we want the whole pages. 
-        if not self.doc:
-            messagebox.showerror("Error", "No PDF loaded")
-            logging.error("Attempted to extract images with no PDF loaded")
-            return
-
-        chapter = self.get_current_chapter()
-        if not chapter:
-            messagebox.showinfo("Info", "No chapter structure detected")
-            logging.warning("No chapter structure detected for image extraction")
-            return
-
-        # Create output directory
-        output_dir = f"Chapter_Images_{chapter['title']}"
-        os.makedirs(output_dir, exist_ok=True)
-        logging.info(f"Created output directory: {output_dir}")
-
-        # Extract images from chapter pages
-        image_count = 0
-        for page_num in range(chapter['start_page'], chapter['end_page'] + 1):
-            page = self.doc.load_page(page_num)
-            image_list = page.get_images(full=True)
-            
-            for img_index, img in enumerate(image_list):
-                xref = img[0]
-                base_image = self.doc.extract_image(xref)
-                image_bytes = base_image["image"]
+            # Extract pages
+            images = []
+            for page_num in range(current_chapter['start'], current_chapter['end'] + 1):
+                if page_num >= self.total_pages:
+                    break
                 
-                # Save image
-                with open(f"{output_dir}/page{page_num+1}_img{img_index+1}.{base_image['ext']}", "wb") as f:
-                    f.write(image_bytes)
-                image_count += 1
-                logging.debug(f"Extracted image {img_index + 1} from page {page_num + 1}")
+                page = self.doc.load_page(page_num)
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                img_data = io.BytesIO(pix.tobytes("png"))
+                images.append(img_data)
+                logging.info(f"Processed page {page_num+1}")
 
-        messagebox.showinfo("Success", f"Extracted {image_count} images to {output_dir}/")
-        logging.info(f"Extracted {image_count} images to {output_dir}/")
+            messagebox.showinfo("Success", 
+                f"Extracted chapter: {current_chapter['title']}\n"
+                f"Pages: {current_chapter['start']+1}-{current_chapter['end']+1}\n"
+                f"Images saved in memory: {len(images)}")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Extraction failed:\n{str(e)}")
+            logging.error(f"Extraction error: {str(e)}")
 
 if __name__ == "__main__":
     root = tk.Tk()
