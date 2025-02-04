@@ -12,7 +12,7 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
 class PDFViewer:
     def __init__(self, root):
         self.root = root
-        self.root.title("PDF Chapter Extractor")
+        self.root.title("Learnicius Jr")
         self.doc = None
         self.current_page = 0
         self.total_pages = 0
@@ -50,16 +50,21 @@ class PDFViewer:
         nav_frame = ttk.Frame(root)
         nav_frame.pack(fill=tk.X)
 
-        self.prev_btn = ttk.Button(nav_frame, text="Previous", command=self.prev_page)
+        self.prev_btn = ttk.Button(nav_frame, text="Previous", command=self.prev_page, state=tk.DISABLED)
         self.prev_btn.pack(side=tk.LEFT, padx=5, pady=2)
 
-        self.next_btn = ttk.Button(nav_frame, text="Next", command=self.next_page)
+        self.next_btn = ttk.Button(nav_frame, text="Next", command=self.next_page, state=tk.DISABLED)
         self.next_btn.pack(side=tk.LEFT, padx=5, pady=2)
 
         self.page_label = ttk.Label(nav_frame, text="Page: 0/0")
         self.page_label.pack(side=tk.LEFT, padx=10)
 
-        self.extract_btn = ttk.Button(nav_frame, text="Extract Chapter", command=self.extract_current_chapter)
+        self.page_entry = ttk.Entry(nav_frame, width=5, state=tk.DISABLED)
+        self.page_entry.pack(side=tk.LEFT, padx=5)
+        self.go_btn = ttk.Button(nav_frame, text="Go", command=self.go_to_page, state=tk.DISABLED)
+        self.go_btn.pack(side=tk.LEFT, padx=5)
+
+        self.extract_btn = ttk.Button(nav_frame, text="Extract Chapter", command=self.extract_current_chapter, state=tk.DISABLED)
         self.extract_btn.pack(side=tk.LEFT, padx=5, pady=2)
 
         self.canvas.bind("<Configure>", self.render_page)
@@ -77,21 +82,39 @@ class PDFViewer:
             self.current_page = 0
             self.chapters = self.get_chapter_info()
             
+            # Enable controls
+            self.prev_btn['state'] = tk.NORMAL
+            self.next_btn['state'] = tk.NORMAL
+            self.extract_btn['state'] = tk.NORMAL
+            self.go_btn['state'] = tk.NORMAL
+            self.page_entry['state'] = tk.NORMAL
+            
             self.update_page_label()
             self.render_page()
             logging.info(f"Loaded PDF with {self.total_pages} pages")
 
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load PDF:\n{str(e)}")
+            # Reset controls if open failed
+            self.prev_btn['state'] = tk.DISABLED
+            self.next_btn['state'] = tk.DISABLED
+            self.extract_btn['state'] = tk.DISABLED
+            self.go_btn['state'] = tk.DISABLED
+            self.page_entry['state'] = tk.DISABLED
 
-            
     def get_chapter_info(self):
         """Extract hierarchical chapter information with deepest subdivisions"""
         chapters = []
         try:
             toc = self.doc.get_toc()
+            
+            # Handle case with no TOC entries
             if not toc:
-                return []
+                return [{
+                    'title': 'Full Document',
+                    'start': 0,
+                    'end': self.total_pages - 1
+                }]
 
             # Identify deepest hierarchical subdivisions
             leaf_entries = []
@@ -146,7 +169,11 @@ class PDFViewer:
 
         except Exception as e:
             logging.warning(f"Chapter detection failed: {str(e)}")
-            return []
+            return [{
+                'title': 'Full Document',
+                'start': 0,
+                'end': self.total_pages - 1
+            }]
 
     def clean_title(self, title):
         return "".join(c if c.isalnum() else "_" for c in title.strip())
@@ -189,39 +216,54 @@ class PDFViewer:
             self.update_page_label()
             self.render_page()
 
+    def go_to_page(self):
+        if not self.doc:
+            messagebox.showinfo("Info", "No PDF loaded")
+            return
+        try:
+            page_num = int(self.page_entry.get())
+            if 1 <= page_num <= self.total_pages:
+                self.current_page = page_num - 1  # Convert to 0-based index
+                self.update_page_label()
+                self.render_page()
+            else:
+                messagebox.showerror("Error", f"Invalid page number. Please enter between 1 and {self.total_pages}")
+        except ValueError:
+            messagebox.showerror("Error", "Please enter a valid number")
+
     def extract_current_chapter(self):
         try:
             if not self.doc:
                 messagebox.showinfo("Info", "No PDF loaded")
-                return
+                return []
 
             current_chapter = next(
                 (ch for ch in self.chapters 
-                 if ch['start'] <= self.current_page <= ch['end']), None
+                if ch['start'] <= self.current_page <= ch['end']), None
             )
 
             if not current_chapter:
                 messagebox.showinfo("Info", "Current page not in any chapter")
-                return
+                return []
 
             # Validate chapter boundaries
             if not (0 <= current_chapter['start'] <= current_chapter['end'] < self.total_pages):
                 messagebox.showerror("Error", "Invalid chapter boundaries")
-                return
+                return []
 
             # Check page count safety limit
             page_count = current_chapter['end'] - current_chapter['start'] + 1
             if page_count > self.MAX_CHAPTER_PAGES:
                 messagebox.showerror("Limit Exceeded", 
                     f"Chapter too large ({page_count} pages). Max allowed: {self.MAX_CHAPTER_PAGES}")
-                return
+                return []
 
             # Extract pages
             images = []
             for page_num in range(current_chapter['start'], current_chapter['end'] + 1):
                 if page_num >= self.total_pages:
                     break
-                
+
                 page = self.doc.load_page(page_num)
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
                 img_data = io.BytesIO(pix.tobytes("png"))
@@ -233,9 +275,12 @@ class PDFViewer:
                 f"Pages: {current_chapter['start']+1}-{current_chapter['end']+1}\n"
                 f"Images saved in memory: {len(images)}")
 
+            return images
+
         except Exception as e:
             messagebox.showerror("Error", f"Extraction failed:\n{str(e)}")
             logging.error(f"Extraction error: {str(e)}")
+            return []
 
 if __name__ == "__main__":
     root = tk.Tk()
