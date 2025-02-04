@@ -1,6 +1,7 @@
 import base64
 import io
 from openai import OpenAI
+import logging
 
 class ImageAnalysisService:
     def __init__(self, api_key):
@@ -10,6 +11,8 @@ class ImageAnalysisService:
         )
 
         self.model = "google/gemini-2.0-flash-thinking-exp:free"
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
 
     def encode_images_to_base64(self, images):
         """
@@ -24,47 +27,53 @@ class ImageAnalysisService:
         base64_images = []
         for img in images:
             # Read the image and encode it to Base64
+            logging.debug("Encoding image to Base64")
             base64_encoded = base64.b64encode(img.getvalue()).decode('utf-8')
             # Add the prefix for a PNG image
             base64_images.append(f"data:image/png;base64,{base64_encoded}")
+            logging.debug(f"Image encoded: {base64_images[-1][:50]}...") # Log first 50 chars
         return base64_images
 
     def analyze_images(self, base64_images):
         """
-        Analyze a list of Base64-encoded images by making an API call to the LLM.
-
+        Analyze multiple images in a single API request.
+        
         Args:
-            base64_images (list): List of Base64-encoded image strings.
-
+            base64_images (list): List of Base64-encoded image strings
+        
         Returns:
-            list: A list of responses from the API for each image.
+            str: Combined response for all images
         """
-        responses = []
+        try:
+            # Start with text prompt
+            content = [{"type": "text", "text": "What's in these images?"}]
+            
+            # Add all images to the content array
+            for image in base64_images:
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": image}
+                })
+            
+            messages = [{"role": "user", "content": content}]
+            
+            logging.debug(f"Sending batch message with {len(base64_images)} images")
+            completion = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages
+            )
+            logging.debug(f'Completion response object for image analysis: {completion}')
+                # Safely extract response content
+            if not completion.choices:
+                return "Error: Empty response from API"
 
-        for base64_image in base64_images:
-            try:
-                # Prepare the messages for the API
-                messages = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": "What's in this image?"},
-                            {"type": "image_base64", "image_base64": base64_image}
-                        ]
-                    }
-                ]
+            first_choice = completion.choices[0]
+            if not first_choice.message or not first_choice.message.content:
+                return "Error: Malformed API response"
 
-                # Call the LLM API
-                completion = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages
-                )
-
-                # Extract the response
-                response_content = completion.choices[0].message["content"]
-                responses.append(response_content)
-
-            except Exception as e:
-                responses.append(f"Error processing image: {str(e)}")
-
-        return responses
+            return first_choice.message.content
+        
+        except Exception as e:
+            logging.error(f"Error processing batch: {str(e)}")
+            return f"Error: {str(e)}"
+        
