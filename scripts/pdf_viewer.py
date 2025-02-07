@@ -20,6 +20,9 @@ class PDFViewer:
         self.chapters = []
         self.MAX_CHAPTER_PAGES = 100  # Safety limit
 
+        # Set a default zoom factor (for higher quality rendering)
+        self.zoom_factor = 2.0
+
         # Create menu
         menubar = tk.Menu(root)
         file_menu = tk.Menu(menubar, tearoff=0)
@@ -63,16 +66,29 @@ class PDFViewer:
         self.page_entry.pack(side=tk.LEFT, padx=5)
         self.go_btn = ttk.Button(nav_frame, text="Go", command=self.go_to_page, state=tk.DISABLED)
         self.go_btn.pack(side=tk.LEFT, padx=5)
-
-        self.extract_btn = ttk.Button(nav_frame, text="Extract Chapter", command=self.extract_current_chapter, state=tk.DISABLED)
+        
+        # Extraction mode toggle: Checked = Chapter mode; Unchecked = Single page (image) mode
+        self.chapter_mode = tk.BooleanVar(value=True)
+        self.mode_toggle = ttk.Checkbutton(nav_frame, text="Chapter Mode", variable=self.chapter_mode, command=self.update_extract_button_text)
+        self.mode_toggle.pack(side=tk.LEFT, padx=5, pady=2)
+        
+        # Extraction button – its text (and function) will update based on the mode
+        self.extract_btn = ttk.Button(nav_frame, text="Extract Chapter", command=self.extract_content, state=tk.DISABLED)
         self.extract_btn.pack(side=tk.LEFT, padx=5, pady=2)
+        
+        # Zoom controls
+        self.zoom_out_btn = ttk.Button(nav_frame, text="Zoom Out", command=self.zoom_out, state=tk.DISABLED)
+        self.zoom_out_btn.pack(side=tk.LEFT, padx=5, pady=2)
+        self.zoom_in_btn = ttk.Button(nav_frame, text="Zoom In", command=self.zoom_in, state=tk.DISABLED)
+        self.zoom_in_btn.pack(side=tk.LEFT, padx=5, pady=2)
 
         self.canvas.bind("<Configure>", self.render_page)
 
     def open_pdf(self):
         try:
             file_path = filedialog.askopenfilename(filetypes=[("PDF Files", "*.pdf")])
-            if not file_path: return
+            if not file_path: 
+                return
 
             if self.doc:
                 self.doc.close()
@@ -88,6 +104,8 @@ class PDFViewer:
             self.extract_btn['state'] = tk.NORMAL
             self.go_btn['state'] = tk.NORMAL
             self.page_entry['state'] = tk.NORMAL
+            self.zoom_in_btn['state'] = tk.NORMAL
+            self.zoom_out_btn['state'] = tk.NORMAL
             
             self.update_page_label()
             self.render_page()
@@ -101,6 +119,8 @@ class PDFViewer:
             self.extract_btn['state'] = tk.DISABLED
             self.go_btn['state'] = tk.DISABLED
             self.page_entry['state'] = tk.DISABLED
+            self.zoom_in_btn['state'] = tk.DISABLED
+            self.zoom_out_btn['state'] = tk.DISABLED
 
     def get_chapter_info(self):
         """Extract hierarchical chapter information with deepest subdivisions"""
@@ -179,24 +199,21 @@ class PDFViewer:
         return "".join(c if c.isalnum() else "_" for c in title.strip())
 
     def render_page(self, event=None):
-        if not self.doc: return
+        if not self.doc:
+            return
         
         try:
-            canvas_width = max(self.canvas.winfo_width(), 10)
-            canvas_height = max(self.canvas.winfo_height(), 10)
-
             page = self.doc.load_page(self.current_page)
-            zoom = min(canvas_width / page.rect.width, 
-                      canvas_height / page.rect.height)
-            
-            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+            # Use the fixed zoom factor for rendering.
+            matrix = fitz.Matrix(self.zoom_factor, self.zoom_factor)
+            pix = page.get_pixmap(matrix=matrix)
             self.photo_image = ImageTk.PhotoImage(
                 Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
             )
             
             self.canvas.delete("all")
             self.canvas.create_image(0, 0, image=self.photo_image, anchor=tk.NW)
-            self.canvas.configure(scrollregion=self.canvas.bbox(tk.ALL))
+            self.canvas.configure(scrollregion=(0, 0, pix.width, pix.height))
             
         except Exception as e:
             logging.error(f"Render error: {str(e)}")
@@ -231,6 +248,14 @@ class PDFViewer:
         except ValueError:
             messagebox.showerror("Error", "Please enter a valid number")
 
+    def zoom_in(self):
+        self.zoom_factor *= 1.25
+        self.render_page()
+
+    def zoom_out(self):
+        self.zoom_factor /= 1.25
+        self.render_page()
+
     def extract_current_chapter(self):
         try:
             if not self.doc:
@@ -239,7 +264,7 @@ class PDFViewer:
 
             current_chapter = next(
                 (ch for ch in self.chapters 
-                if ch['start'] <= self.current_page <= ch['end']), None
+                 if ch['start'] <= self.current_page <= ch['end']), None
             )
 
             if not current_chapter:
@@ -281,6 +306,39 @@ class PDFViewer:
             messagebox.showerror("Error", f"Extraction failed:\n{str(e)}")
             logging.error(f"Extraction error: {str(e)}")
             return []
+        
+    def extract_current_page(self):
+        """Extracts the current page as an image."""
+        try:
+            if not self.doc:
+                messagebox.showinfo("Info", "No PDF loaded")
+                return []
+
+            page = self.doc.load_page(self.current_page)
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+            img_data = io.BytesIO(pix.tobytes("png"))
+
+            messagebox.showinfo("Success", f"Extracted page {self.current_page + 1}")
+            logging.info(f"Extracted page {self.current_page + 1}")
+            return [img_data]
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Page extraction failed:\n{str(e)}")
+            logging.error(f"Page extraction error: {str(e)}")
+            return []
+
+    def extract_content(self):
+        """Extracts content based on the current extraction mode."""
+        if self.chapter_mode.get():
+            return self.extract_current_chapter()
+        else:
+            return self.extract_current_page()
+
+    def update_extract_button_text(self):
+        if self.chapter_mode.get():
+            self.extract_btn.config(text="Extract Chapter")
+        else:
+            self.extract_btn.config(text="Extract Page")
 
 if __name__ == "__main__":
     root = tk.Tk()
