@@ -6,6 +6,9 @@ from image_analysis import ImageAnalysisService
 import logging
 import json
 
+# Import our prompt definitions.
+from prompts import single_page_prompt, chapter_prompt
+
 def load_config(config_path="scripts/config.json"):
     try:
         with open(config_path, 'r') as f:
@@ -124,7 +127,10 @@ class ImageAnalysisApp:
             self.analyze_btn.config(text="Analyze Image")
     
     def analyze_extraction(self):
-        """Perform analysis on the extracted content and update the conversation chain."""
+        """
+        Instead of requesting a description from the LLM (since the user already sees the image),
+        add a context-only message to the conversation chain using the appropriate prompt.
+        """
         images = self.pdf_viewer.extract_content()
         if not images:
             messagebox.showinfo("Info", "No images to analyze.")
@@ -132,62 +138,32 @@ class ImageAnalysisApp:
         try:
             base64_images = self.image_analysis_service.encode_images_to_base64(images)
             
-            # Determine prompt text based on number of images.
-            prompt_text = "What's in this image?" if len(base64_images) == 1 else "What's in these images?"
+            # Select the appropriate prompt based on extraction mode.
+            prompt_text = chapter_prompt if self.pdf_viewer.chapter_mode.get() else single_page_prompt
             
-            # Build a conversation message for the analysis request that includes the image(s).
-            analysis_request_message = {
+            # Build a conversation message for the context.
+            analysis_context_message = {
                 "role": "user",
                 "content": [{"type": "text", "text": prompt_text}]
             }
             for img_str in base64_images:
-                analysis_request_message["content"].append({
+                analysis_context_message["content"].append({
                     "type": "image_url",
                     "image_url": {"url": img_str}
                 })
             
-            # Append the analysis request to the conversation chain.
-            self.conversation.append(analysis_request_message)
+            # Append the context message to the conversation chain.
+            self.conversation.append(analysis_context_message)
             
-            # Call the analysis API.
-            analysis_response = self.image_analysis_service.analyze_images(base64_images)
+            messagebox.showinfo("Context Updated", "Analysis context has been added to the conversation chain.")
             
-            # Append the assistant's response to the conversation chain.
-            assistant_message = {"role": "assistant", "content": analysis_response}
-            self.conversation.append(assistant_message)
-            
-            # Display the result in a new window.
-            self.show_results(analysis_response)
-            
-            # If the chat window is open, refresh its display.
+            # Refresh the chat window (if open) to reflect the new context.
             if self.chat_window is not None:
                 self.chat_window.refresh_chat_display()
             
         except Exception as e:
             messagebox.showerror("Error", f"Analysis failed:\n{str(e)}")
             logging.error(f"Analysis error: {str(e)}")
-    
-    def show_results(self, response):
-        """Display analysis results in a new window."""
-        result_window = tk.Toplevel(self.root)
-        result_window.title("Analysis Results")
-        result_window.geometry("600x400")
-        
-        text_area = tk.Text(result_window, wrap=tk.WORD)
-        text_area.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
-        text_area.insert(tk.END, response)
-        text_area.config(state=tk.DISABLED)
-        
-        copy_btn = tk.Button(result_window, 
-                             text="Copy to Clipboard", 
-                             command=lambda: self.copy_to_clipboard(response))
-        copy_btn.pack(pady=5)
-    
-    def copy_to_clipboard(self, text):
-        """Copy text to the system clipboard."""
-        self.root.clipboard_clear()
-        self.root.clipboard_append(text)
-        messagebox.showinfo("Info", "Analysis copied to clipboard!")
     
     def open_chat_window(self):
         """Open (or raise) the chat window that shares the conversation chain."""
